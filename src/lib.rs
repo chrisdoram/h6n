@@ -1,8 +1,9 @@
 use std::fmt;
+use std::marker::PhantomData;
 use std::ops::{Add, Sub};
 
 /// A location in 2d space in the cube coordinate system, `(q, r, s)`.
-/// The constriant q + r + s = 0 holds.
+/// The constriant `q + r + s = 0` holds.
 #[derive(Copy, Clone, Debug)]
 pub struct Point {
     q: i32,
@@ -18,36 +19,25 @@ pub struct Vector {
     s: i32,
 }
 
-/// A pixel represented by a cartesian point
-#[derive(Copy, Clone, Debug)]
-pub struct Pixel {
-    x: f64,
-    y: f64,
-}
+pub trait Orientation {}
 
-type Mat2 = [f64; 4];
+#[derive(Debug, Clone)]
+pub struct Flat;
 
-pub struct BasisVector {
-    /// 2x2 forward matrix
-    pub f: Mat2,
-    /// 2x2 inverse matrix
-    pub b: Mat2,
-    pub start_angle: f64, // these increase in 60 degree or PI/3 increments
-    /// angle of left edge from start corner
-    pub start_angle_l: f64,
-    /// angle of right edge from start corner
-    pub start_angle_r: f64,
-}
+impl Orientation for Flat {}
 
-/// Marker const representing a hexagon configured in a flat orientation
-pub const FLAT: bool = true;
-/// Marker const representing a hexagon configured in a pointy orientation
-pub const POINTY: bool = false;
+#[derive(Debug, Clone)]
+pub struct Pointy;
+
+impl Orientation for Pointy {}
 
 /// A hexagon defined by its canonical coordinate in space.
-/// Orientation of the hexagon is encoded at the type level by the boolean const generic `IS_FLAT`.
+/// Orientation of the hexagon is encoded at the type level.
 #[derive(Copy, Clone, Debug)]
-pub struct Hex<const IS_FLAT: bool>(Point);
+pub struct Hex<O: Orientation> {
+    coordinate: Point,
+    _phantom: PhantomData<O>,
+}
 
 // Basic error unit struct returned for an invalid coordinate.
 pub struct Invalid;
@@ -116,29 +106,38 @@ impl From<Point> for Vector {
     }
 }
 
-impl<const IS_FLAT: bool> TryFrom<(i32, i32, i32)> for Hex<IS_FLAT> {
+impl<O: Orientation> TryFrom<(i32, i32, i32)> for Hex<O> {
     type Error = Invalid;
 
     fn try_from(value: (i32, i32, i32)) -> Result<Self, Self::Error> {
-        Ok(Hex(value.try_into()?))
+        Ok(Self {
+            coordinate: value.try_into()?,
+            _phantom: PhantomData,
+        })
     }
 }
 
-impl<const IS_FLAT: bool> From<(i32, i32)> for Hex<IS_FLAT> {
-    fn from(item: (i32, i32)) -> Self {
-        Hex(item.into())
+impl<O: Orientation> From<(i32, i32)> for Hex<O> {
+    fn from(value: (i32, i32)) -> Self {
+        Self {
+            coordinate: value.into(),
+            _phantom: PhantomData,
+        }
     }
 }
 
-impl<const IS_FLAT: bool> From<Point> for Hex<IS_FLAT> {
+impl<O: Orientation> From<Point> for Hex<O> {
     fn from(value: Point) -> Self {
-        Hex(value)
+        Self {
+            coordinate: value,
+            _phantom: PhantomData,
+        }
     }
 }
 
-impl<const IS_FLAT: bool> From<Hex<IS_FLAT>> for Point {
-    fn from(value: Hex<IS_FLAT>) -> Self {
-        value.0
+impl<O: Orientation> From<Hex<O>> for Point {
+    fn from(value: Hex<O>) -> Self {
+        value.coordinate
     }
 }
 
@@ -205,23 +204,48 @@ impl Add<Vector> for Point {
     }
 }
 
-impl<const IS_FLAT: bool> Hex<IS_FLAT> {
-    pub fn neighbours(&self) -> [Hex<IS_FLAT>; 6] {
-        Vector::UNIT_VECTORS.map(|x| (self.0 + x).into())
+impl<O: Orientation> Hex<O> {
+    pub fn neighbours(&self) -> [Hex<O>; 6] {
+        Vector::UNIT_VECTORS.map(|x| (self.coordinate + x).into())
     }
 }
 
-impl Hex<FLAT> {
-    // Need to calculate upfront. Cannot be const without removing the call to sqrt().
-    //
-    // const FLAT_BASIS_VECTOR = BasisVector {
-    //     f: [3. / 2., 0., 3.0f64.sqrt() / 2., 3.0f64.sqrt()],
-    //     b: [2. / 3., 0., -1. / 3., 3.0f64.sqrt() / 3.],
-    //     start_angle: 0.,
-    //     start_angle_l: (4. / 3.) * PI,
-    //     start_angle_r: (2. / 3.) * PI,
-    // };
+impl<O: Orientation> Hex<O> {
+    pub fn reflect_q(self) -> Self {
+        Self {
+            coordinate: Point {
+                q: self.coordinate.q,
+                r: self.coordinate.s,
+                s: self.coordinate.r,
+            },
+            _phantom: PhantomData,
+        }
+    }
 
+    pub fn reflect_r(self) -> Self {
+        Self {
+            coordinate: Point {
+                q: self.coordinate.s,
+                r: self.coordinate.r,
+                s: self.coordinate.q,
+            },
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn reflect_s(self) -> Self {
+        Self {
+            coordinate: Point {
+                q: self.coordinate.r,
+                r: self.coordinate.q,
+                s: self.coordinate.s,
+            },
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl Hex<Flat> {
     pub fn width(size: i32) -> f64 {
         2f64 * f64::from(size)
     }
@@ -231,29 +255,13 @@ impl Hex<FLAT> {
     }
 }
 
-impl Hex<POINTY> {
-    // Need to calculate upfront. Cannot be const without removing the call to sqrt().
-    //
-    // const POINTY_BASIS_VECTOR = BasisVector {
-    //     f: [3. / 2., 0., 3.0f64.sqrt() / 2., 3.0f64.sqrt()],
-    //     b: [2. / 3., 0., -1. / 3., 3.0f64.sqrt() / 3.],
-    //     start_angle: 0.,
-    //     start_angle_l: (4. / 3.) * PI,
-    //     start_angle_r: (2. / 3.) * PI,
-    // };
-
+impl Hex<Pointy> {
     pub fn width(size: i32) -> f64 {
         3f64.sqrt() * f64::from(size)
     }
 
     pub fn height(size: i32) -> f64 {
         2f64 * f64::from(size)
-    }
-}
-
-impl<const IS_FLAT: bool> From<Hex<IS_FLAT>> for Pixel {
-    fn from(_: Hex<IS_FLAT>) -> Self {
-        Pixel { x: 0f64, y: 0f64 } // FIX ME
     }
 }
 
@@ -290,5 +298,12 @@ impl Vector {
     /// Distance between the vector and other
     pub fn distance(self, other: Self) -> i32 {
         (self - other).len()
+    }
+}
+
+impl Point {
+    pub fn distance(self, other: Self) -> i32 {
+        let diff = self - other;
+        (diff.q.abs() + diff.r.abs() + diff.s.abs()) / 2
     }
 }
