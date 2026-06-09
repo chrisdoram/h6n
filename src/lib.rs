@@ -19,17 +19,29 @@ pub struct Vector {
     s: i32,
 }
 
-pub trait Orientation {}
+pub trait Orientation {
+    /// Forward hex-to-pixel matrix `[f0, f1, f2, f3]` for a hex of size 1,
+    /// mapping `(q, r)` to a pixel `(x, y)`.
+    const FORWARD: [f64; 4];
+    /// The angle of the first corner, in multiples of 60 degrees.
+    const START_ANGLE: f64;
+}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Flat;
 
-impl Orientation for Flat {}
+impl Orientation for Flat {
+    const FORWARD: [f64; 4] = [1.5, 0.0, 0.866_025_403_784_438_6, 1.732_050_807_568_877_2];
+    const START_ANGLE: f64 = 0.0;
+}
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Pointy;
 
-impl Orientation for Pointy {}
+impl Orientation for Pointy {
+    const FORWARD: [f64; 4] = [1.732_050_807_568_877_2, 0.866_025_403_784_438_6, 0.0, 1.5];
+    const START_ANGLE: f64 = 0.5;
+}
 
 /// A hexagon defined by its canonical coordinate in space.
 /// Orientation of the hexagon is encoded at the type level.
@@ -205,13 +217,36 @@ impl Add<Vector> for Point {
 }
 
 impl<O: Orientation> Hex<O> {
+    /// The canonical coordinate of this hex.
+    pub fn coordinate(&self) -> Point {
+        self.coordinate
+    }
+
     pub fn neighbours(&self) -> [Hex<O>; 6] {
         Vector::UNIT_VECTORS.map(|x| (self.coordinate + x).into())
+    }
+
+    /// The pixel coordinate of the hex's center for the given `size`,
+    /// taking the orientation into account.
+    pub fn center(&self, size: f64) -> (f64, f64) {
+        let [f0, f1, f2, f3] = O::FORWARD;
+        let q = f64::from(self.coordinate.q);
+        let r = f64::from(self.coordinate.r);
+        (size * (f0 * q + f1 * r), size * (f2 * q + f3 * r))
+    }
+
+    /// The six pixel corners of the hex for the given `size`, in order.
+    pub fn corners(&self, size: f64) -> [(f64, f64); 6] {
+        let (cx, cy) = self.center(size);
+        std::array::from_fn(|i| {
+            let angle = std::f64::consts::FRAC_PI_3 * (i as f64 + O::START_ANGLE);
+            (cx + size * angle.cos(), cy + size * angle.sin())
+        })
     }
 }
 
 impl<O: Orientation> Hex<O> {
-    pub fn reflect_q(self) -> Self {
+    pub fn reflect_q(&self) -> Self {
         Self {
             coordinate: Point {
                 q: self.coordinate.q,
@@ -222,7 +257,7 @@ impl<O: Orientation> Hex<O> {
         }
     }
 
-    pub fn reflect_r(self) -> Self {
+    pub fn reflect_r(&self) -> Self {
         Self {
             coordinate: Point {
                 q: self.coordinate.s,
@@ -233,7 +268,7 @@ impl<O: Orientation> Hex<O> {
         }
     }
 
-    pub fn reflect_s(self) -> Self {
+    pub fn reflect_s(&self) -> Self {
         Self {
             coordinate: Point {
                 q: self.coordinate.r,
@@ -302,6 +337,18 @@ impl Vector {
 }
 
 impl Point {
+    pub fn q(&self) -> i32 {
+        self.q
+    }
+
+    pub fn r(&self) -> i32 {
+        self.r
+    }
+
+    pub fn s(&self) -> i32 {
+        self.s
+    }
+
     pub fn distance(self, other: Self) -> i32 {
         let diff = self - other;
         (diff.q.abs() + diff.r.abs() + diff.s.abs()) / 2
