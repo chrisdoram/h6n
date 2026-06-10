@@ -9,12 +9,12 @@
 //!   [`Pointy`]) encoded at the type level.
 //!
 //! ```
-//! use h6n::{Hex, Pointy, Vector};
+//! use h6n::{Direction, Hex, Pointy};
 //!
 //! let hex: Hex<Pointy> = Hex::new(2, -1);
 //!
 //! // Step to an adjacent hex and measure the distance back.
-//! let neighbor = hex + Vector::DIRECTIONS[0];
+//! let neighbor = hex.neighbor(Direction::QS);
 //! assert_eq!(hex.distance(neighbor), 1);
 //!
 //! // Convert to pixel space and back.
@@ -440,9 +440,14 @@ impl<O> Hex<O> {
         self.coordinate
     }
 
-    /// The six adjacent hexes, in the order of [`Vector::DIRECTIONS`].
+    /// The six adjacent hexes, in the order of [`Direction::ALL`].
     pub fn neighbors(&self) -> [Hex<O>; 6] {
         Vector::DIRECTIONS.map(|d| *self + d)
+    }
+
+    /// The adjacent hex in `direction`.
+    pub fn neighbor(self, direction: Direction) -> Self {
+        self + direction.vector()
     }
 
     /// The number of hexes between `self` and `other`.
@@ -468,10 +473,10 @@ impl<O> Hex<O> {
     }
 
     /// The hexes at exactly `radius` rings from `self` — a hollow ring,
-    /// walked once around: starting from the corner in the direction of
-    /// [`Vector::DIRECTIONS`]`[4]` and stepping `radius` hexes per side in
-    /// `DIRECTIONS` order. A `radius` of 0 yields just `self`; negative
-    /// yields nothing.
+    /// walked once around: starting from the corner toward
+    /// [`Direction::SR`] and stepping `radius` hexes per side in
+    /// [`Direction::ALL`] order. A `radius` of 0 yields just `self`;
+    /// negative yields nothing.
     ///
     /// ```
     /// use h6n::{Hex, Pointy};
@@ -542,19 +547,13 @@ impl<O: Orientation> Hex<O> {
     }
 
     /// The indices into [`Hex::corners`] of the two corners bounding the
-    /// edge shared with the neighbor in [`Vector::DIRECTIONS`]`[direction]`
-    /// (equivalently, [`Hex::neighbors`]`[direction]`). The edge runs from
+    /// edge shared with the neighbor in `direction`. The edge runs from
     /// the first returned corner to the second.
     ///
     /// Useful for drawing region boundaries: walk a cell's directions, and
     /// for each neighbor outside the region, stroke this edge.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `direction >= 6`, mirroring a direct `DIRECTIONS` index.
-    pub fn edge_corner_indices(direction: usize) -> (usize, usize) {
-        assert!(direction < 6, "direction index out of range: {direction}");
-        let first = (direction + O::EDGE_CORNER_OFFSET) % 6;
+    pub const fn edge_corner_indices(direction: Direction) -> (usize, usize) {
+        let first = (direction as usize + O::EDGE_CORNER_OFFSET) % 6;
         (first, (first + 1) % 6)
     }
 
@@ -604,8 +603,77 @@ impl Hex<Pointy> {
     }
 }
 
+/// The six neighbor directions on the hexagonal grid, in the order of
+/// [`Vector::DIRECTIONS`].
+///
+/// Each name lists the cube axis that increases, then the axis that
+/// decreases: `QS` is the displacement `(1, 0, -1)`. The screen headings
+/// in the variant docs assume pixel `y` increasing downward.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Direction {
+    /// `(1, 0, -1)` — [`Pointy`]: east; [`Flat`]: south-east.
+    QS,
+    /// `(0, 1, -1)` — [`Pointy`]: south-east; [`Flat`]: south.
+    RS,
+    /// `(-1, 1, 0)` — [`Pointy`]: south-west; [`Flat`]: south-west.
+    RQ,
+    /// `(-1, 0, 1)` — [`Pointy`]: west; [`Flat`]: north-west.
+    SQ,
+    /// `(0, -1, 1)` — [`Pointy`]: north-west; [`Flat`]: north.
+    SR,
+    /// `(1, -1, 0)` — [`Pointy`]: north-east; [`Flat`]: north-east.
+    QR,
+}
+
+impl Direction {
+    /// All six directions, in [`Vector::DIRECTIONS`] order; the same order
+    /// as [`Hex::neighbors`].
+    pub const ALL: [Self; 6] = [
+        Self::QS,
+        Self::RS,
+        Self::RQ,
+        Self::SQ,
+        Self::SR,
+        Self::QR,
+    ];
+
+    /// The unit displacement vector of this direction.
+    pub const fn vector(self) -> Vector {
+        Vector::DIRECTIONS[self as usize]
+    }
+
+    /// The direction rotated 60 degrees clockwise (with pixel `y`
+    /// increasing downward); matches [`Vector::rotate_clockwise`].
+    #[must_use]
+    pub const fn rotate_clockwise(self) -> Self {
+        Self::ALL[(self as usize + 1) % 6]
+    }
+
+    /// The direction rotated 60 degrees counterclockwise (with pixel `y`
+    /// increasing downward); matches [`Vector::rotate_counterclockwise`].
+    #[must_use]
+    pub const fn rotate_counterclockwise(self) -> Self {
+        Self::ALL[(self as usize + 5) % 6]
+    }
+
+    /// The opposite direction.
+    #[must_use]
+    pub const fn opposite(self) -> Self {
+        Self::ALL[(self as usize + 3) % 6]
+    }
+}
+
+/// The unit displacement vector of the direction; equivalent to
+/// [`Direction::vector`].
+impl From<Direction> for Vector {
+    fn from(value: Direction) -> Self {
+        value.vector()
+    }
+}
+
 impl Vector {
-    /// The six displacement vectors between a hex and its neighbors.
+    /// The six displacement vectors between a hex and its neighbors, in the
+    /// order of [`Direction::ALL`].
     pub const DIRECTIONS: [Self; 6] = [
         Self { q: 1, r: 0, s: -1 },
         Self { q: 0, r: 1, s: -1 },
@@ -803,7 +871,7 @@ mod tests {
             let size = 10.0;
             let (cx, cy) = hex.center(size);
             let corners = hex.corners(size);
-            for (direction, neighbor) in hex.neighbors().into_iter().enumerate() {
+            for (direction, neighbor) in Direction::ALL.into_iter().zip(hex.neighbors()) {
                 let (nx, ny) = neighbor.center(size);
                 let (a, b) = Hex::<O>::edge_corner_indices(direction);
                 let edge_mid_x = (corners[a].0 + corners[b].0) / 2.0;
@@ -811,7 +879,7 @@ mod tests {
                 assert!(
                     (edge_mid_x - (cx + nx) / 2.0).abs() < 1e-9
                         && (edge_mid_y - (cy + ny) / 2.0).abs() < 1e-9,
-                    "edge for direction {direction} does not face its neighbor"
+                    "edge for {direction:?} does not face its neighbor"
                 );
             }
         }
@@ -820,9 +888,44 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "direction index out of range")]
-    fn edge_corner_indices_rejects_bad_direction() {
-        Hex::<Pointy>::edge_corner_indices(6);
+    fn directions_align_with_vectors() {
+        for (direction, vector) in Direction::ALL.into_iter().zip(Vector::DIRECTIONS) {
+            assert_eq!(direction.vector(), vector);
+            assert_eq!(Vector::from(direction), vector);
+            assert_eq!(direction.opposite().vector(), -vector);
+            assert_eq!(
+                direction.rotate_clockwise().vector(),
+                vector.rotate_clockwise()
+            );
+            assert_eq!(
+                direction.rotate_counterclockwise().vector(),
+                vector.rotate_counterclockwise()
+            );
+        }
+    }
+
+    #[test]
+    fn direction_rotations_compose_to_identity() {
+        for direction in Direction::ALL {
+            assert_eq!(
+                direction.rotate_clockwise().rotate_counterclockwise(),
+                direction
+            );
+            assert_eq!(direction.opposite().opposite(), direction);
+            let mut d = direction;
+            for _ in 0..6 {
+                d = d.rotate_clockwise();
+            }
+            assert_eq!(d, direction);
+        }
+    }
+
+    #[test]
+    fn neighbor_matches_neighbors_order() {
+        let hex: Hex<Pointy> = Hex::new(-2, 3);
+        for (direction, expected) in Direction::ALL.into_iter().zip(hex.neighbors()) {
+            assert_eq!(hex.neighbor(direction), expected);
+        }
     }
 
     fn roundtrip<O: Orientation>(size: f64) {
