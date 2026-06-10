@@ -111,6 +111,9 @@ impl Svg {
 }
 
 /// Compact `q,r,s` label for a hex.
+///
+/// Deliberately not the `Display` impl: its `(q, r, s)` form is up to four
+/// characters wider and overflows a `SIZE`-pixel hex at this font size.
 fn label(hex: &Hex<Pointy>) -> String {
     let p = hex.coordinate();
     format!("{},{},{}", p.q(), p.r(), p.s())
@@ -148,7 +151,7 @@ fn neighbours(dir: &Path) {
     let mut svg = base(3);
     let center: Hex<Pointy> = (0, 0).into();
     svg.cell(&Cell::new(center, "#ffd166", label(&center)));
-    for n in center.neighbours() {
+    for n in center.neighbors() {
         svg.cell(&Cell::new(n, "#90caf9", label(&n)));
     }
     write(dir, "neighbours.svg", svg);
@@ -190,7 +193,7 @@ fn rotations(dir: &Path) {
     // Rotate the spoke vector to the starting hex clockwise around the origin,
     // stepping through all six 60-degree positions.
     let start: Hex<Pointy> = (2, -1).into();
-    let mut spoke: Vector = (start.coordinate() - origin).into();
+    let mut spoke: Vector = start.coordinate() - origin;
     let shades = [
         "#ffd166", "#f4a261", "#e76f51", "#90caf9", "#64b5f6", "#42a5f5",
     ];

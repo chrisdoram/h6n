@@ -1,30 +1,75 @@
+//! Hexagonal grid coordinates and geometry.
+//!
+//! Hexagons are addressed in the [cube coordinate] system `(q, r, s)`, where
+//! the constraint `q + r + s = 0` always holds. The building blocks:
+//!
+//! - [`Point`]: a location on the grid.
+//! - [`Vector`]: a displacement between locations.
+//! - [`Hex`]: a hexagon at a [`Point`], with its orientation ([`Flat`] or
+//!   [`Pointy`]) encoded at the type level.
+//!
+//! ```
+//! use h6n::{Hex, Pointy, Vector};
+//!
+//! let hex: Hex<Pointy> = Hex::new(2, -1);
+//!
+//! // Step to an adjacent hex and measure the distance back.
+//! let neighbor = hex + Vector::DIRECTIONS[0];
+//! assert_eq!(hex.distance(neighbor), 1);
+//!
+//! // Convert to pixel space and back.
+//! let (x, y) = hex.center(32.0);
+//! assert_eq!(Hex::from_pixel(x, y, 32.0), hex);
+//! ```
+//!
+//! All methods return new values and never modify in place; the only
+//! mutation in the API is the explicit `+=`/`-=` assignment operators.
+//!
+//! Coordinates are `i32` and arithmetic inherits the primitive overflow
+//! semantics: panic in debug builds, wrapping in release builds.
+//!
+//! [cube coordinate]: https://www.redblobgames.com/grids/hexagons/#coordinates-cube
+
+#![warn(missing_docs)]
+
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
-use std::ops::{Add, Sub};
-
-/// A location in 2d space in the cube coordinate system, `(q, r, s)`.
-/// The constriant `q + r + s = 0` holds.
-#[derive(Copy, Clone, Debug)]
-pub struct Point {
-    q: i32,
-    r: i32,
-    s: i32,
-}
-
-/// A displacement in space in the cube coordinate system.
-#[derive(Copy, Clone, Debug)]
-pub struct Vector {
-    q: i32,
-    r: i32,
-    s: i32,
-}
+use std::ops::{Add, AddAssign, Mul, Neg, Sub, SubAssign};
 
 /// √3 as an f64 literal, since `f64::sqrt` is not a `const fn`.
 const SQRT_3: f64 = 1.732_050_807_568_877_2;
 /// √3 / 2
 const SQRT_3_2: f64 = SQRT_3 / 2.0;
 
-pub trait Orientation {
+/// A location on the hexagonal grid, in cube coordinates `(q, r, s)`.
+/// The constraint `q + r + s = 0` always holds.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Point {
+    q: i32,
+    r: i32,
+    s: i32,
+}
+
+/// A displacement between two locations on the hexagonal grid, in cube
+/// coordinates `(q, r, s)`. The constraint `q + r + s = 0` always holds.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Vector {
+    q: i32,
+    r: i32,
+    s: i32,
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for super::Flat {}
+    impl Sealed for super::Pointy {}
+}
+
+/// The orientation of a hexagon: [`Flat`] topped or [`Pointy`] topped.
+///
+/// This trait is sealed and cannot be implemented outside this crate.
+pub trait Orientation: sealed::Sealed {
     /// Forward hex-to-pixel matrix `[f0, f1, f2, f3]` for a hex of size 1,
     /// mapping `(q, r)` to a pixel `(x, y)`.
     const FORWARD: [f64; 4];
@@ -35,7 +80,8 @@ pub trait Orientation {
     const START_ANGLE: f64;
 }
 
-#[derive(Debug, Clone, Copy)]
+/// Marker type for flat-top hexagons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Flat;
 
 impl Orientation for Flat {
@@ -44,7 +90,8 @@ impl Orientation for Flat {
     const START_ANGLE: f64 = 0.0;
 }
 
-#[derive(Debug, Clone, Copy)]
+/// Marker type for pointy-top hexagons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Pointy;
 
 impl Orientation for Pointy {
@@ -53,12 +100,45 @@ impl Orientation for Pointy {
     const START_ANGLE: f64 = 0.5;
 }
 
-/// A hexagon defined by its canonical coordinate in space.
-/// Orientation of the hexagon is encoded at the type level.
-#[derive(Copy, Clone, Debug)]
-pub struct Hex<O: Orientation> {
+/// A hexagon defined by its canonical coordinate on the grid.
+///
+/// The orientation `O` ([`Flat`] or [`Pointy`]) is encoded at the type level
+/// and only affects pixel-space geometry; grid coordinates and arithmetic are
+/// orientation-independent.
+pub struct Hex<O> {
     coordinate: Point,
-    _phantom: PhantomData<O>,
+    // `fn() -> O` keeps `Hex` `Copy`/`Send`/`Sync` regardless of `O`.
+    _phantom: PhantomData<fn() -> O>,
+}
+
+impl<O> Clone for Hex<O> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<O> Copy for Hex<O> {}
+
+impl<O> fmt::Debug for Hex<O> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Hex")
+            .field("coordinate", &self.coordinate)
+            .finish()
+    }
+}
+
+impl<O> PartialEq for Hex<O> {
+    fn eq(&self, other: &Self) -> bool {
+        self.coordinate == other.coordinate
+    }
+}
+
+impl<O> Eq for Hex<O> {}
+
+impl<O> Hash for Hex<O> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.coordinate.hash(state);
+    }
 }
 
 /// Error returned when a cube coordinate violates the constraint `q + r + s = 0`.
@@ -66,8 +146,11 @@ pub struct Hex<O: Orientation> {
 /// Carries the offending coordinate so callers can report what was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidCoordinate {
+    /// The `q` element of the rejected coordinate.
     pub q: i32,
+    /// The `r` element of the rejected coordinate.
     pub r: i32,
+    /// The `s` element of the rejected coordinate.
     pub s: i32,
 }
 
@@ -84,7 +167,7 @@ impl fmt::Display for InvalidCoordinate {
 impl std::error::Error for InvalidCoordinate {}
 
 /// The conversion from a tuple containing all three elements of a coordinate
-/// is fallable as the contraint `q + r + s = 0` must hold.
+/// is fallible as the constraint `q + r + s = 0` must hold.
 impl TryFrom<(i32, i32, i32)> for Point {
     type Error = InvalidCoordinate;
 
@@ -107,14 +190,12 @@ impl TryFrom<(i32, i32, i32)> for Point {
 
 impl From<(i32, i32)> for Point {
     fn from(value: (i32, i32)) -> Self {
-        Self {
-            q: value.0,
-            r: value.1,
-            s: -value.0 - value.1,
-        }
+        Self::new(value.0, value.1)
     }
 }
 
+/// The conversion from a tuple containing all three elements of a coordinate
+/// is fallible as the constraint `q + r + s = 0` must hold.
 impl TryFrom<(i32, i32, i32)> for Vector {
     type Error = InvalidCoordinate;
 
@@ -137,11 +218,7 @@ impl TryFrom<(i32, i32, i32)> for Vector {
 
 impl From<(i32, i32)> for Vector {
     fn from(value: (i32, i32)) -> Self {
-        Self {
-            q: value.0,
-            r: value.1,
-            s: -value.0 - value.1,
-        }
+        Self::new(value.0, value.1)
     }
 }
 
@@ -155,27 +232,23 @@ impl From<Point> for Vector {
     }
 }
 
-impl<O: Orientation> TryFrom<(i32, i32, i32)> for Hex<O> {
+/// The conversion from a tuple containing all three elements of a coordinate
+/// is fallible as the constraint `q + r + s = 0` must hold.
+impl<O> TryFrom<(i32, i32, i32)> for Hex<O> {
     type Error = InvalidCoordinate;
 
     fn try_from(value: (i32, i32, i32)) -> Result<Self, Self::Error> {
-        Ok(Self {
-            coordinate: value.try_into()?,
-            _phantom: PhantomData,
-        })
+        Ok(Point::try_from(value)?.into())
     }
 }
 
-impl<O: Orientation> From<(i32, i32)> for Hex<O> {
+impl<O> From<(i32, i32)> for Hex<O> {
     fn from(value: (i32, i32)) -> Self {
-        Self {
-            coordinate: value.into(),
-            _phantom: PhantomData,
-        }
+        Point::from(value).into()
     }
 }
 
-impl<O: Orientation> From<Point> for Hex<O> {
+impl<O> From<Point> for Hex<O> {
     fn from(value: Point) -> Self {
         Self {
             coordinate: value,
@@ -184,7 +257,7 @@ impl<O: Orientation> From<Point> for Hex<O> {
     }
 }
 
-impl<O: Orientation> From<Hex<O>> for Point {
+impl<O> From<Hex<O>> for Point {
     fn from(value: Hex<O>) -> Self {
         value.coordinate
     }
@@ -192,13 +265,13 @@ impl<O: Orientation> From<Hex<O>> for Point {
 
 impl fmt::Display for Point {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "q: {}, r: {}, s: {}", self.q, self.r, self.s)
+        write!(f, "({}, {}, {})", self.q, self.r, self.s)
     }
 }
 
 impl fmt::Display for Vector {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "q: {}, r: {}, s: {}", self.q, self.r, self.s)
+        write!(f, "({}, {}, {})", self.q, self.r, self.s)
     }
 }
 
@@ -223,6 +296,39 @@ impl Sub for Vector {
             r: self.r - other.r,
             s: self.s - other.s,
         }
+    }
+}
+
+impl Neg for Vector {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        Self::Output {
+            q: -self.q,
+            r: -self.r,
+            s: -self.s,
+        }
+    }
+}
+
+/// Scaling the vector by a factor; equivalent to [`Vector::scale`].
+impl Mul<i32> for Vector {
+    type Output = Self;
+
+    fn mul(self, factor: i32) -> Self::Output {
+        self.scale(factor)
+    }
+}
+
+impl AddAssign for Vector {
+    fn add_assign(&mut self, other: Self) {
+        *self = *self + other;
+    }
+}
+
+impl SubAssign for Vector {
+    fn sub_assign(&mut self, other: Self) {
+        *self = *self - other;
     }
 }
 
@@ -253,16 +359,125 @@ impl Add<Vector> for Point {
     }
 }
 
-impl<O: Orientation> Hex<O> {
+/// Can subtract a vector displacement from a point, returning a new point.
+impl Sub<Vector> for Point {
+    type Output = Self;
+
+    fn sub(self, other: Vector) -> Self::Output {
+        self + -other
+    }
+}
+
+impl AddAssign<Vector> for Point {
+    fn add_assign(&mut self, other: Vector) {
+        *self = *self + other;
+    }
+}
+
+impl SubAssign<Vector> for Point {
+    fn sub_assign(&mut self, other: Vector) {
+        *self = *self - other;
+    }
+}
+
+/// Can add a vector displacement to a hex, returning the hex at the
+/// displaced coordinate.
+impl<O> Add<Vector> for Hex<O> {
+    type Output = Self;
+
+    fn add(self, other: Vector) -> Self::Output {
+        (self.coordinate + other).into()
+    }
+}
+
+/// Can subtract a vector displacement from a hex, returning the hex at the
+/// displaced coordinate.
+impl<O> Sub<Vector> for Hex<O> {
+    type Output = Self;
+
+    fn sub(self, other: Vector) -> Self::Output {
+        (self.coordinate - other).into()
+    }
+}
+
+/// Can subtract two hexes to return a vector representing the displacement
+/// between them.
+impl<O> Sub for Hex<O> {
+    type Output = Vector;
+
+    fn sub(self, other: Self) -> Self::Output {
+        self.coordinate - other.coordinate
+    }
+}
+
+impl<O> AddAssign<Vector> for Hex<O> {
+    fn add_assign(&mut self, other: Vector) {
+        *self = *self + other;
+    }
+}
+
+impl<O> SubAssign<Vector> for Hex<O> {
+    fn sub_assign(&mut self, other: Vector) {
+        *self = *self - other;
+    }
+}
+
+impl<O> Hex<O> {
+    /// Creates the hex at axial coordinate `(q, r)`, deriving `s = -q - r`.
+    pub fn new(q: i32, r: i32) -> Self {
+        Point::new(q, r).into()
+    }
+
     /// The canonical coordinate of this hex.
     pub fn coordinate(&self) -> Point {
         self.coordinate
     }
 
-    pub fn neighbours(&self) -> [Hex<O>; 6] {
-        Vector::UNIT_VECTORS.map(|x| (self.coordinate + x).into())
+    /// The six adjacent hexes, in the order of [`Vector::DIRECTIONS`].
+    pub fn neighbors(&self) -> [Hex<O>; 6] {
+        Vector::DIRECTIONS.map(|d| *self + d)
     }
 
+    /// The number of hexes between `self` and `other`.
+    pub fn distance(self, other: Self) -> i32 {
+        self.coordinate.distance(other.coordinate)
+    }
+
+    /// Reflects the hex across the q-axis, swapping `r` and `s`.
+    #[must_use]
+    pub fn reflect_q(self) -> Self {
+        Point {
+            q: self.coordinate.q,
+            r: self.coordinate.s,
+            s: self.coordinate.r,
+        }
+        .into()
+    }
+
+    /// Reflects the hex across the r-axis, swapping `q` and `s`.
+    #[must_use]
+    pub fn reflect_r(self) -> Self {
+        Point {
+            q: self.coordinate.s,
+            r: self.coordinate.r,
+            s: self.coordinate.q,
+        }
+        .into()
+    }
+
+    /// Reflects the hex across the s-axis, swapping `q` and `r`.
+    #[must_use]
+    pub fn reflect_s(self) -> Self {
+        Point {
+            q: self.coordinate.r,
+            r: self.coordinate.q,
+            s: self.coordinate.s,
+        }
+        .into()
+    }
+}
+
+impl<O: Orientation> Hex<O> {
     /// The pixel coordinate of the hex's center for the given `size`,
     /// taking the orientation into account.
     pub fn center(&self, size: f64) -> (f64, f64) {
@@ -283,7 +498,7 @@ impl<O: Orientation> Hex<O> {
 
     /// The hex containing the pixel coordinate `(x, y)` for the given `size`.
     /// This is the inverse of [`Hex::center`].
-    pub fn from_pixel((x, y): (f64, f64), size: f64) -> Self {
+    pub fn from_pixel(x: f64, y: f64, size: f64) -> Self {
         let [b0, b1, b2, b3] = O::INVERSE;
         let q = (b0 * x + b1 * y) / size;
         let r = (b2 * x + b3 * y) / size;
@@ -299,67 +514,37 @@ impl<O: Orientation> Hex<O> {
         } else if dr > ds {
             rr = -rq - rs;
         }
-        (rq as i32, rr as i32).into()
-    }
-}
-
-impl<O: Orientation> Hex<O> {
-    pub fn reflect_q(&self) -> Self {
-        Self {
-            coordinate: Point {
-                q: self.coordinate.q,
-                r: self.coordinate.s,
-                s: self.coordinate.r,
-            },
-            _phantom: PhantomData,
-        }
-    }
-
-    pub fn reflect_r(&self) -> Self {
-        Self {
-            coordinate: Point {
-                q: self.coordinate.s,
-                r: self.coordinate.r,
-                s: self.coordinate.q,
-            },
-            _phantom: PhantomData,
-        }
-    }
-
-    pub fn reflect_s(&self) -> Self {
-        Self {
-            coordinate: Point {
-                q: self.coordinate.r,
-                r: self.coordinate.q,
-                s: self.coordinate.s,
-            },
-            _phantom: PhantomData,
-        }
+        Self::new(rq as i32, rr as i32)
     }
 }
 
 impl Hex<Flat> {
-    pub fn width(size: i32) -> f64 {
-        2f64 * f64::from(size)
+    /// The pixel width of a flat-top hexagon of the given `size`.
+    pub const fn width(size: f64) -> f64 {
+        2.0 * size
     }
 
-    pub fn height(size: i32) -> f64 {
-        3f64.sqrt() * f64::from(size)
+    /// The pixel height of a flat-top hexagon of the given `size`.
+    pub const fn height(size: f64) -> f64 {
+        SQRT_3 * size
     }
 }
 
 impl Hex<Pointy> {
-    pub fn width(size: i32) -> f64 {
-        3f64.sqrt() * f64::from(size)
+    /// The pixel width of a pointy-top hexagon of the given `size`.
+    pub const fn width(size: f64) -> f64 {
+        SQRT_3 * size
     }
 
-    pub fn height(size: i32) -> f64 {
-        2f64 * f64::from(size)
+    /// The pixel height of a pointy-top hexagon of the given `size`.
+    pub const fn height(size: f64) -> f64 {
+        2.0 * size
     }
 }
 
 impl Vector {
-    const UNIT_VECTORS: [Self; 6] = [
+    /// The six displacement vectors between a hex and its neighbors.
+    pub const DIRECTIONS: [Self; 6] = [
         Self { q: 1, r: 0, s: -1 },
         Self { q: 0, r: 1, s: -1 },
         Self { q: -1, r: 1, s: 0 },
@@ -368,47 +553,182 @@ impl Vector {
         Self { q: 1, r: -1, s: 0 },
     ];
 
-    /// Scale the vector by a given magnitude
-    pub fn scale(&self, factor: i32) -> Self {
-        (self.q * factor, self.r * factor).into()
+    /// Creates the vector with axial elements `(q, r)`, deriving `s = -q - r`.
+    pub fn new(q: i32, r: i32) -> Self {
+        Self { q, r, s: -q - r }
     }
 
-    /// Rotate the vector 60 degrees anti-clockwise
-    pub fn rotate_anticlockwise(&self) -> Self {
-        (self.q + self.r, -self.q).into()
-    }
-
-    /// Rotate the vector 60 degrees clockwise
-    pub fn rotate_clockwise(&self) -> Self {
-        (-self.r, self.q + self.r).into()
-    }
-
-    /// The length of the vector
-    pub fn len(&self) -> i32 {
-        (self.q.abs() + self.r.abs() + self.s.abs()) / 2
-    }
-
-    /// Distance between the vector and other
-    pub fn distance(self, other: Self) -> i32 {
-        (self - other).len()
-    }
-}
-
-impl Point {
+    /// The `q` element of the vector.
     pub fn q(&self) -> i32 {
         self.q
     }
 
+    /// The `r` element of the vector.
     pub fn r(&self) -> i32 {
         self.r
     }
 
+    /// The `s` element of the vector.
     pub fn s(&self) -> i32 {
         self.s
     }
 
+    /// Scales the vector by a given magnitude.
+    #[must_use]
+    pub fn scale(self, factor: i32) -> Self {
+        Self::new(self.q * factor, self.r * factor)
+    }
+
+    /// Rotates the vector 60 degrees counterclockwise.
+    #[must_use]
+    pub fn rotate_counterclockwise(self) -> Self {
+        Self::new(self.q + self.r, -self.q)
+    }
+
+    /// Rotates the vector 60 degrees clockwise.
+    #[must_use]
+    pub fn rotate_clockwise(self) -> Self {
+        Self::new(-self.r, self.q + self.r)
+    }
+
+    /// The length of the vector, in hexes.
+    pub fn magnitude(self) -> i32 {
+        (self.q.abs() + self.r.abs() + self.s.abs()) / 2
+    }
+
+    /// The distance between the tips of `self` and `other`, in hexes.
     pub fn distance(self, other: Self) -> i32 {
-        let diff = self - other;
-        (diff.q.abs() + diff.r.abs() + diff.s.abs()) / 2
+        (self - other).magnitude()
+    }
+}
+
+impl Point {
+    /// Creates the point at axial coordinate `(q, r)`, deriving `s = -q - r`.
+    pub fn new(q: i32, r: i32) -> Self {
+        Self { q, r, s: -q - r }
+    }
+
+    /// The `q` element of the coordinate.
+    pub fn q(&self) -> i32 {
+        self.q
+    }
+
+    /// The `r` element of the coordinate.
+    pub fn r(&self) -> i32 {
+        self.r
+    }
+
+    /// The `s` element of the coordinate.
+    pub fn s(&self) -> i32 {
+        self.s
+    }
+
+    /// The number of hexes between `self` and `other`.
+    pub fn distance(self, other: Self) -> i32 {
+        (self - other).magnitude()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_from_rejects_invalid_coordinates() {
+        let err = Point::try_from((1, 2, 3)).unwrap_err();
+        assert_eq!(err, InvalidCoordinate { q: 1, r: 2, s: 3 });
+        assert!(Vector::try_from((1, 2, 3)).is_err());
+        assert!(Hex::<Pointy>::try_from((1, 2, -3)).is_ok());
+    }
+
+    #[test]
+    fn distance_counts_hexes() {
+        let a = Point::new(-2, 0);
+        let b = Point::new(2, -1);
+        assert_eq!(a.distance(b), 4);
+        assert_eq!(b.distance(a), 4);
+        assert_eq!(a.distance(a), 0);
+    }
+
+    #[test]
+    fn assign_operators_match_their_operators() {
+        let d = Vector::new(1, -1);
+        let mut hex: Hex<Flat> = Hex::new(2, 0);
+        hex += d;
+        assert_eq!(hex, Hex::new(2, 0) + d);
+        hex -= d;
+        assert_eq!(hex, Hex::new(2, 0));
+
+        let mut p = Point::new(2, 0);
+        p += d;
+        assert_eq!(p, Point::new(2, 0) + d);
+
+        let mut v = Vector::new(2, 0);
+        v -= d;
+        assert_eq!(v, Vector::new(2, 0) - d);
+    }
+
+    #[test]
+    fn neighbors_are_all_adjacent() {
+        let hex: Hex<Flat> = Hex::new(3, -1);
+        for n in hex.neighbors() {
+            assert_eq!(hex.distance(n), 1);
+        }
+    }
+
+    #[test]
+    fn rotations_compose_to_identity() {
+        let v = Vector::new(2, -1);
+        assert_eq!(v.rotate_clockwise().rotate_counterclockwise(), v);
+        let mut w = v;
+        for _ in 0..6 {
+            w = w.rotate_clockwise();
+        }
+        assert_eq!(w, v);
+    }
+
+    #[test]
+    fn reflections_are_involutions() {
+        let hex: Hex<Pointy> = Hex::new(3, -1);
+        assert_eq!(hex.reflect_q().reflect_q(), hex);
+        assert_eq!(hex.reflect_r().reflect_r(), hex);
+        assert_eq!(hex.reflect_s().reflect_s(), hex);
+    }
+
+    fn roundtrip<O: Orientation>(size: f64) {
+        for q in -10..=10 {
+            for r in -10..=10 {
+                let hex: Hex<O> = Hex::new(q, r);
+                let (x, y) = hex.center(size);
+                assert_eq!(
+                    Hex::<O>::from_pixel(x, y, size),
+                    hex,
+                    "center roundtrip for ({q}, {r})"
+                );
+
+                // Points partway from the center towards each corner must
+                // still resolve to the same hex.
+                for (cx, cy) in hex.corners(size) {
+                    let (ix, iy) = (x + (cx - x) * 0.99, y + (cy - y) * 0.99);
+                    assert_eq!(
+                        Hex::<O>::from_pixel(ix, iy, size),
+                        hex,
+                        "near-corner roundtrip for ({q}, {r})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn from_pixel_inverts_center_flat() {
+        roundtrip::<Flat>(32.0);
+        roundtrip::<Flat>(1.0);
+    }
+
+    #[test]
+    fn from_pixel_inverts_center_pointy() {
+        roundtrip::<Pointy>(32.0);
+        roundtrip::<Pointy>(1.0);
     }
 }

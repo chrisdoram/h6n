@@ -2,5 +2,10 @@
 name = "h6n"
 version = "0.1.0"
 edition = "2024"
+description = "Hexagonal grid coordinates and geometry in the cube coordinate system"
+license = "MIT"
+repository = "https://github.com/chrisdoram/h6n"
+keywords = ["hexagon", "hexagonal", "grid", "gamedev", "coordinates"]
+categories = ["game-development", "mathematics"]
 
 [dependencies]
