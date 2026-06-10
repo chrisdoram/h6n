@@ -61,17 +61,40 @@ pub struct Hex<O: Orientation> {
     _phantom: PhantomData<O>,
 }
 
-// Basic error unit struct returned for an invalid coordinate.
-pub struct Invalid;
+/// Error returned when a cube coordinate violates the constraint `q + r + s = 0`.
+///
+/// Carries the offending coordinate so callers can report what was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidCoordinate {
+    pub q: i32,
+    pub r: i32,
+    pub s: i32,
+}
+
+impl fmt::Display for InvalidCoordinate {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "invalid cube coordinate (q: {}, r: {}, s: {}): q + r + s = 0 must hold",
+            self.q, self.r, self.s
+        )
+    }
+}
+
+impl std::error::Error for InvalidCoordinate {}
 
 /// The conversion from a tuple containing all three elements of a coordinate
 /// is fallable as the contraint `q + r + s = 0` must hold.
 impl TryFrom<(i32, i32, i32)> for Point {
-    type Error = Invalid;
+    type Error = InvalidCoordinate;
 
     fn try_from(value: (i32, i32, i32)) -> Result<Self, Self::Error> {
         if value.0 + value.1 + value.2 != 0 {
-            Err(Invalid)
+            Err(InvalidCoordinate {
+                q: value.0,
+                r: value.1,
+                s: value.2,
+            })
         } else {
             Ok(Self {
                 q: value.0,
@@ -93,11 +116,15 @@ impl From<(i32, i32)> for Point {
 }
 
 impl TryFrom<(i32, i32, i32)> for Vector {
-    type Error = Invalid;
+    type Error = InvalidCoordinate;
 
     fn try_from(value: (i32, i32, i32)) -> Result<Self, Self::Error> {
         if value.0 + value.1 + value.2 != 0 {
-            Err(Invalid)
+            Err(InvalidCoordinate {
+                q: value.0,
+                r: value.1,
+                s: value.2,
+            })
         } else {
             Ok(Self {
                 q: value.0,
@@ -129,7 +156,7 @@ impl From<Point> for Vector {
 }
 
 impl<O: Orientation> TryFrom<(i32, i32, i32)> for Hex<O> {
-    type Error = Invalid;
+    type Error = InvalidCoordinate;
 
     fn try_from(value: (i32, i32, i32)) -> Result<Self, Self::Error> {
         Ok(Self {
