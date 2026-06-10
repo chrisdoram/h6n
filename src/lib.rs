@@ -19,6 +19,11 @@ pub struct Vector {
     s: i32,
 }
 
+/// √3 as an f64 literal, since `f64::sqrt` is not a `const fn`.
+const SQRT_3: f64 = 1.732_050_807_568_877_2;
+/// √3 / 2
+const SQRT_3_2: f64 = SQRT_3 / 2.0;
+
 pub trait Orientation {
     /// Forward hex-to-pixel matrix `[f0, f1, f2, f3]` for a hex of size 1,
     /// mapping `(q, r)` to a pixel `(x, y)`.
@@ -31,7 +36,7 @@ pub trait Orientation {
 pub struct Flat;
 
 impl Orientation for Flat {
-    const FORWARD: [f64; 4] = [1.5, 0.0, 0.866_025_403_784_438_6, 1.732_050_807_568_877_2];
+    const FORWARD: [f64; 4] = [1.5, 0.0, SQRT_3_2, SQRT_3];
     const START_ANGLE: f64 = 0.0;
 }
 
@@ -39,7 +44,7 @@ impl Orientation for Flat {
 pub struct Pointy;
 
 impl Orientation for Pointy {
-    const FORWARD: [f64; 4] = [1.732_050_807_568_877_2, 0.866_025_403_784_438_6, 0.0, 1.5];
+    const FORWARD: [f64; 4] = [SQRT_3, SQRT_3_2, 0.0, 1.5];
     const START_ANGLE: f64 = 0.5;
 }
 
