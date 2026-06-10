@@ -28,6 +28,9 @@ pub trait Orientation {
     /// Forward hex-to-pixel matrix `[f0, f1, f2, f3]` for a hex of size 1,
     /// mapping `(q, r)` to a pixel `(x, y)`.
     const FORWARD: [f64; 4];
+    /// Inverse pixel-to-hex matrix `[b0, b1, b2, b3]` for a hex of size 1,
+    /// mapping a pixel `(x, y)` to a fractional `(q, r)`.
+    const INVERSE: [f64; 4];
     /// The angle of the first corner, in multiples of 60 degrees.
     const START_ANGLE: f64;
 }
@@ -37,6 +40,7 @@ pub struct Flat;
 
 impl Orientation for Flat {
     const FORWARD: [f64; 4] = [1.5, 0.0, SQRT_3_2, SQRT_3];
+    const INVERSE: [f64; 4] = [2.0 / 3.0, 0.0, -1.0 / 3.0, SQRT_3 / 3.0];
     const START_ANGLE: f64 = 0.0;
 }
 
@@ -45,6 +49,7 @@ pub struct Pointy;
 
 impl Orientation for Pointy {
     const FORWARD: [f64; 4] = [SQRT_3, SQRT_3_2, 0.0, 1.5];
+    const INVERSE: [f64; 4] = [SQRT_3 / 3.0, -1.0 / 3.0, 0.0, 2.0 / 3.0];
     const START_ANGLE: f64 = 0.5;
 }
 
@@ -247,6 +252,27 @@ impl<O: Orientation> Hex<O> {
             let angle = std::f64::consts::FRAC_PI_3 * (i as f64 + O::START_ANGLE);
             (cx + size * angle.cos(), cy + size * angle.sin())
         })
+    }
+
+    /// The hex containing the pixel coordinate `(x, y)` for the given `size`.
+    /// This is the inverse of [`Hex::center`].
+    pub fn from_pixel((x, y): (f64, f64), size: f64) -> Self {
+        let [b0, b1, b2, b3] = O::INVERSE;
+        let q = (b0 * x + b1 * y) / size;
+        let r = (b2 * x + b3 * y) / size;
+        let s = -q - r;
+
+        // Round each cube coordinate, then recompute the one that moved
+        // furthest from the others so the constraint q + r + s = 0 holds.
+        let (mut rq, mut rr) = (q.round(), r.round());
+        let rs = s.round();
+        let (dq, dr, ds) = ((rq - q).abs(), (rr - r).abs(), (rs - s).abs());
+        if dq > dr && dq > ds {
+            rq = -rr - rs;
+        } else if dr > ds {
+            rr = -rq - rs;
+        }
+        (rq as i32, rr as i32).into()
     }
 }
 
