@@ -78,6 +78,11 @@ pub trait Orientation: sealed::Sealed {
     const INVERSE: [f64; 4];
     /// The angle of the first corner, in multiples of 60 degrees.
     const START_ANGLE: f64;
+    /// Aligns neighbor directions with corners: the edge shared with the
+    /// neighbor in [`Vector::DIRECTIONS`]`[d]` runs from corner
+    /// `(d + EDGE_CORNER_OFFSET) % 6` to the corner after it. Exposed
+    /// through [`Hex::edge_corner_indices`].
+    const EDGE_CORNER_OFFSET: usize;
 }
 
 /// Marker type for flat-top hexagons.
@@ -88,6 +93,7 @@ impl Orientation for Flat {
     const FORWARD: [f64; 4] = [1.5, 0.0, SQRT_3_2, SQRT_3];
     const INVERSE: [f64; 4] = [2.0 / 3.0, 0.0, -1.0 / 3.0, SQRT_3 / 3.0];
     const START_ANGLE: f64 = 0.0;
+    const EDGE_CORNER_OFFSET: usize = 0;
 }
 
 /// Marker type for pointy-top hexagons.
@@ -98,6 +104,7 @@ impl Orientation for Pointy {
     const FORWARD: [f64; 4] = [SQRT_3, SQRT_3_2, 0.0, 1.5];
     const INVERSE: [f64; 4] = [SQRT_3 / 3.0, -1.0 / 3.0, 0.0, 2.0 / 3.0];
     const START_ANGLE: f64 = 0.5;
+    const EDGE_CORNER_OFFSET: usize = 5;
 }
 
 /// A hexagon defined by its canonical coordinate on the grid.
@@ -443,6 +450,44 @@ impl<O> Hex<O> {
         self.coordinate.distance(other.coordinate)
     }
 
+    /// All hexes within `radius` rings of `self` — a filled hexagonal disc,
+    /// including `self`. Yields nothing for a negative `radius`.
+    ///
+    /// ```
+    /// use h6n::{Hex, Pointy};
+    ///
+    /// let center: Hex<Pointy> = Hex::new(0, 0);
+    /// assert_eq!(center.range(2).count(), 19);
+    /// ```
+    pub fn range(self, radius: i32) -> impl Iterator<Item = Self> {
+        (-radius..=radius).flat_map(move |q| {
+            let lo = (-radius).max(-q - radius);
+            let hi = radius.min(-q + radius);
+            (lo..=hi).map(move |r| self + Vector::new(q, r))
+        })
+    }
+
+    /// The hexes at exactly `radius` rings from `self` — a hollow ring,
+    /// walked once around: starting from the corner in the direction of
+    /// [`Vector::DIRECTIONS`]`[4]` and stepping `radius` hexes per side in
+    /// `DIRECTIONS` order. A `radius` of 0 yields just `self`; negative
+    /// yields nothing.
+    ///
+    /// ```
+    /// use h6n::{Hex, Pointy};
+    ///
+    /// let center: Hex<Pointy> = Hex::new(0, 0);
+    /// assert_eq!(center.ring(2).count(), 12);
+    /// ```
+    pub fn ring(self, radius: i32) -> impl Iterator<Item = Self> {
+        let center = (radius == 0).then_some(self);
+        let walk = (0..6).flat_map(move |side| {
+            let corner = self + Vector::DIRECTIONS[(side + 4) % 6].scale(radius);
+            (0..radius).map(move |step| corner + Vector::DIRECTIONS[side].scale(step))
+        });
+        center.into_iter().chain(walk)
+    }
+
     /// Reflects the hex across the q-axis, swapping `r` and `s`.
     #[must_use]
     pub fn reflect_q(self) -> Self {
@@ -494,6 +539,23 @@ impl<O: Orientation> Hex<O> {
             let angle = std::f64::consts::FRAC_PI_3 * (i as f64 + O::START_ANGLE);
             (cx + size * angle.cos(), cy + size * angle.sin())
         })
+    }
+
+    /// The indices into [`Hex::corners`] of the two corners bounding the
+    /// edge shared with the neighbor in [`Vector::DIRECTIONS`]`[direction]`
+    /// (equivalently, [`Hex::neighbors`]`[direction]`). The edge runs from
+    /// the first returned corner to the second.
+    ///
+    /// Useful for drawing region boundaries: walk a cell's directions, and
+    /// for each neighbor outside the region, stroke this edge.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `direction >= 6`, mirroring a direct `DIRECTIONS` index.
+    pub fn edge_corner_indices(direction: usize) -> (usize, usize) {
+        assert!(direction < 6, "direction index out of range: {direction}");
+        let first = (direction + O::EDGE_CORNER_OFFSET) % 6;
+        (first, (first + 1) % 6)
     }
 
     /// The hex containing the pixel coordinate `(x, y)` for the given `size`.
@@ -693,6 +755,74 @@ mod tests {
         assert_eq!(hex.reflect_q().reflect_q(), hex);
         assert_eq!(hex.reflect_r().reflect_r(), hex);
         assert_eq!(hex.reflect_s().reflect_s(), hex);
+    }
+
+    #[test]
+    fn range_is_a_filled_disc() {
+        let center: Hex<Pointy> = Hex::new(2, -3);
+        for radius in 0..4 {
+            let cells: Vec<_> = center.range(radius).collect();
+            assert_eq!(cells.len() as i32, 3 * radius * radius + 3 * radius + 1);
+            assert!(cells.iter().all(|&h| center.distance(h) <= radius));
+            assert!(cells.contains(&center));
+        }
+        assert_eq!(center.range(-1).count(), 0);
+    }
+
+    #[test]
+    fn ring_is_a_hollow_ring() {
+        let center: Hex<Flat> = Hex::new(-1, 4);
+        assert_eq!(center.ring(0).collect::<Vec<_>>(), vec![center]);
+        assert_eq!(center.ring(-1).count(), 0);
+        for radius in 1..4 {
+            let cells: Vec<_> = center.ring(radius).collect();
+            assert_eq!(cells.len() as i32, 6 * radius);
+            assert!(cells.iter().all(|&h| center.distance(h) == radius));
+            let unique: std::collections::HashSet<_> = cells.iter().copied().collect();
+            assert_eq!(unique.len(), cells.len(), "ring revisits a hex");
+        }
+    }
+
+    #[test]
+    fn rings_partition_range() {
+        let sort_key = |h: &Hex<Pointy>| (h.coordinate().q(), h.coordinate().r());
+        let center: Hex<Pointy> = Hex::new(1, 1);
+        let mut from_rings: Vec<_> = (0..=3).flat_map(|r| center.ring(r)).collect();
+        let mut from_range: Vec<_> = center.range(3).collect();
+        from_rings.sort_by_key(sort_key);
+        from_range.sort_by_key(sort_key);
+        assert_eq!(from_rings, from_range);
+    }
+
+    #[test]
+    fn edge_corner_indices_face_their_neighbor() {
+        // The midpoint of the claimed shared edge must be the midpoint
+        // between the two hex centers — that is what "shared edge" means.
+        fn check<O: Orientation>() {
+            let hex: Hex<O> = Hex::new(1, -2);
+            let size = 10.0;
+            let (cx, cy) = hex.center(size);
+            let corners = hex.corners(size);
+            for (direction, neighbor) in hex.neighbors().into_iter().enumerate() {
+                let (nx, ny) = neighbor.center(size);
+                let (a, b) = Hex::<O>::edge_corner_indices(direction);
+                let edge_mid_x = (corners[a].0 + corners[b].0) / 2.0;
+                let edge_mid_y = (corners[a].1 + corners[b].1) / 2.0;
+                assert!(
+                    (edge_mid_x - (cx + nx) / 2.0).abs() < 1e-9
+                        && (edge_mid_y - (cy + ny) / 2.0).abs() < 1e-9,
+                    "edge for direction {direction} does not face its neighbor"
+                );
+            }
+        }
+        check::<Flat>();
+        check::<Pointy>();
+    }
+
+    #[test]
+    #[should_panic(expected = "direction index out of range")]
+    fn edge_corner_indices_rejects_bad_direction() {
+        Hex::<Pointy>::edge_corner_indices(6);
     }
 
     fn roundtrip<O: Orientation>(size: f64) {
