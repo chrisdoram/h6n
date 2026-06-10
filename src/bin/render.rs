@@ -1,13 +1,15 @@
 //! A visual smoke-test for the `h6n` hexagon library.
 //!
 //! Builds a small hexagonal map and renders a handful of SVG files, one per
-//! library operation (neighbours, distance, reflections, rotations), into a
-//! `renders/` directory. Open the `.svg` files in a browser to inspect them.
+//! library operation (neighbours/directions, distance, reflections,
+//! rotations, range, ring, region boundaries), into a `renders/` directory.
+//! Open the `.svg` files in a browser to inspect them.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use h6n::{Hex, Point, Pointy, Vector};
+use h6n::{Direction, Hex, Point, Pointy, Vector};
 
 /// The pixel size (center-to-corner) used for every rendered hex.
 const SIZE: f64 = 32.0;
@@ -75,12 +77,23 @@ impl Svg {
         ));
     }
 
-    /// Draw a straight line between two pixel points (used for distance).
+    /// Draw a dashed line between two pixel points (used for distance).
     fn line(&mut self, a: (f64, f64), b: (f64, f64), stroke: &str) {
         self.grow(a);
         self.grow(b);
         self.elems.push(format!(
             r##"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{stroke}" stroke-width="3" stroke-dasharray="6 4"/>"##,
+            a.0, a.1, b.0, b.1
+        ));
+    }
+
+    /// Draw a solid hex edge between two pixel points (used for region
+    /// boundaries).
+    fn edge(&mut self, a: (f64, f64), b: (f64, f64), stroke: &str) {
+        self.grow(a);
+        self.grow(b);
+        self.elems.push(format!(
+            r##"<line x1="{:.2}" y1="{:.2}" x2="{:.2}" y2="{:.2}" stroke="{stroke}" stroke-width="4" stroke-linecap="round"/>"##,
             a.0, a.1, b.0, b.1
         ));
     }
@@ -119,23 +132,10 @@ fn label(hex: &Hex<Pointy>) -> String {
     format!("{},{},{}", p.q(), p.r(), p.s())
 }
 
-/// All hexes within `radius` rings of the origin.
-fn hex_map(radius: i32) -> Vec<Hex<Pointy>> {
-    let mut hexes = Vec::new();
-    for q in -radius..=radius {
-        let lo = (-radius).max(-q - radius);
-        let hi = radius.min(-q + radius);
-        for r in lo..=hi {
-            hexes.push((q, r).into());
-        }
-    }
-    hexes
-}
-
 /// Render the base map as faint background cells, returning the populated `Svg`.
 fn base(radius: i32) -> Svg {
     let mut svg = Svg::new();
-    for hex in hex_map(radius) {
+    for hex in Hex::new(0, 0).range(radius) {
         svg.cell(&Cell::new(hex, "#ffffff", label(&hex)));
     }
     svg
@@ -147,14 +147,63 @@ fn write(dir: &Path, name: &str, svg: Svg) {
     println!("wrote {}", path.display());
 }
 
+/// Each neighbor labelled with its [`Direction`] name, in
+/// [`Direction::ALL`] order.
 fn neighbours(dir: &Path) {
     let mut svg = base(3);
     let center: Hex<Pointy> = (0, 0).into();
     svg.cell(&Cell::new(center, "#ffd166", label(&center)));
-    for n in center.neighbors() {
-        svg.cell(&Cell::new(n, "#90caf9", label(&n)));
+    for (d, n) in Direction::ALL.into_iter().zip(center.neighbors()) {
+        svg.cell(&Cell::new(n, "#90caf9", format!("{d:?}")));
     }
     write(dir, "neighbours.svg", svg);
+}
+
+/// A filled disc: [`Hex::range`] around an off-center hex.
+fn range(dir: &Path) {
+    let mut svg = base(3);
+    let center: Hex<Pointy> = (1, -1).into();
+    for hex in center.range(2) {
+        let fill = if hex == center { "#ffd166" } else { "#90caf9" };
+        svg.cell(&Cell::new(hex, fill, label(&hex)));
+    }
+    write(dir, "range.svg", svg);
+}
+
+/// A hollow ring: [`Hex::ring`], each hex labelled with its position in
+/// the documented walk order (corner toward [`Direction::SR`] first, then
+/// `radius` steps per side in [`Direction::ALL`] order).
+fn ring(dir: &Path) {
+    let mut svg = base(3);
+    let center: Hex<Pointy> = (0, 0).into();
+    svg.cell(&Cell::new(center, "#ffd166", label(&center)));
+    for (i, hex) in center.ring(2).enumerate() {
+        svg.cell(&Cell::new(hex, "#90caf9", i.to_string()));
+    }
+    write(dir, "ring.svg", svg);
+}
+
+/// A region outlined via [`Hex::edge_corner_indices`]: stroke each edge
+/// whose neighbor lies outside the region.
+fn boundary(dir: &Path) {
+    let mut svg = base(3);
+    let region: HashSet<Hex<Pointy>> = Hex::new(0, 0)
+        .range(1)
+        .chain(Hex::new(2, -1).range(1))
+        .collect();
+    for &hex in &region {
+        svg.cell(&Cell::new(hex, "#a5d6a7", label(&hex)));
+    }
+    for &hex in &region {
+        let corners = hex.corners(SIZE);
+        for (d, n) in Direction::ALL.into_iter().zip(hex.neighbors()) {
+            if !region.contains(&n) {
+                let (a, b) = Hex::<Pointy>::edge_corner_indices(d);
+                svg.edge(corners[a], corners[b], "#b00");
+            }
+        }
+    }
+    write(dir, "boundary.svg", svg);
 }
 
 fn distance(dir: &Path) {
@@ -213,6 +262,9 @@ fn main() {
     distance(dir);
     reflections(dir);
     rotations(dir);
+    range(dir);
+    ring(dir);
+    boundary(dir);
 
     println!("done — open the files in renders/ in a browser");
 }
